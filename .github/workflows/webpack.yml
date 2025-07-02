@@ -21,9 +21,10 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ matrix.node-version }}
-
+    - name: Install tsx globally
+      run: npm install -g tsx
     - name: Build
       run: |
         npm install --silent
-        exec tsx index.ts
+        exec npx tsx index.ts
         npx webpack
