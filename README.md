@@ -21,7 +21,7 @@ The server provides tools for:
 
 1. Clone this repository:
 ```bash
-git clone [[repository-url]](https://github.com/thesidshah/pokemon-mcp.git)
+git clone https://github.com/thesidshah/pokemon-mcp.git
 cd pokemon-mcp-server
 ```
 
