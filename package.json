@@ -9,12 +9,13 @@
   },
   "scripts": {
     "build": "tsc",
-    "mcp":"tsx index.ts",
+    "mcp": "tsx index.ts",
     "start": "tsx index.ts",
     "dev": "tsx watch index.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.4.0"
+    "@modelcontextprotocol/sdk": "^0.4.0",
+    "express": "^5.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

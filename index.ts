@@ -6,6 +6,8 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import http from "http";
+import { spawn } from "child_process";
 
 // --- Domain Types ---------------------------------------------------------
 
@@ -413,7 +415,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const move = attacker.moves.find(m => m.name.toLowerCase() === move_name.toLowerCase());
       if (!move) {
-        throw new Error(`${attacker.name} doesn’t know "${move_name}"`);
+        throw new Error(`${attacker.name} doesn't know "${move_name}"`);
       }
 
       const damage = calculateDamage(attacker, defender, move);
@@ -509,8 +511,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// --- Simple HTTP Server for Status and Health Checks --------------------
+
+const PORT = process.env.PORT || 3000;
+
+// Create a simple HTTP server for health checks
+const httpServer = http.createServer((req, res) => {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Content-Type', 'application/json');
+  
+  if (req.url === '/') {
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      status: 'Pokemon MCP Server is running!',
+      version: '1.0.0',
+      name: 'pokemon-server',
+      description: 'A Pokemon-themed MCP server with battle system',
+      usage: 'This server uses stdio transport. Connect via MCP client with stdio.',
+      tools: TOOLS.map(t => ({ name: t.name, description: t.description }))
+    }, null, 2));
+  } else if (req.url === '/health') {
+    res.writeHead(200);
+    res.end(JSON.stringify({ status: 'healthy', timestamp: new Date().toISOString() }));
+  } else {
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: 'Not found' }));
+  }
+});
+
 // Boot server
 async function main() {
+  // Start the HTTP server for health checks
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Pokemon MCP Server running on http://0.0.0.0:${PORT}`);
+    console.log(`📡 Health check: http://0.0.0.0:${PORT}/health`);
+    console.log(`📖 Server info: http://0.0.0.0:${PORT}/`);
+    console.log(`🎮 MCP Server ready for stdio connections!`);
+  });
+
+  // Start the MCP server with stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
