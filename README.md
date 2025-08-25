@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a Model Context Protocol (MCP) server that simulates a Pokemon battle system. Your task is to integrate this server with Claude Desktop or a ChatGPT-compatible client to enable AI-powered Pokemon battles.
+This is a Model Context Protocol (MCP) server that simulates a Pokemon battle system. Your task is to integrate this server with Claude or a ChatGPT-compatible client to enable AI-powered Pokemon battles.
 
 The server provides tools for:
 - Generating and retrieving Pokemon
@@ -21,7 +21,7 @@ The server provides tools for:
 
 1. Clone this repository:
 ```bash
-git clone [repository-url]
+git clone https://github.com/thesidshah/pokemon-mcp.git
 cd pokemon-mcp-server
 ```
 
