@@ -9,9 +9,6 @@ import {
 import http from "http";
 import { spawn } from "child_process";
 
-// --- Domain Types ---------------------------------------------------------
-
-// Derive literal type of all keys in TYPE_EFFECTIVENESS
 const TYPE_EFFECTIVENESS = {
   normal:    { rock: 0.5, ghost: 0,   steel: 0.5 },
   fire:      { fire: 0.5, water: 0.5, grass: 2, ice: 2, bug: 2, rock: 0.5, dragon: 0.5, steel: 2 },
@@ -64,13 +61,11 @@ interface Pokemon {
     defense: number;
     speed: number;
   };
-  // The following only exist once instantiated for battle:
   stats?: PokemonStats;
   moves?: Move[];
   status?: string | null;
 }
 
-// A fully‐fledged Pokémon ready for battle
 interface BattlePokemon extends Pokemon {
   stats: PokemonStats;
   moves: Move[];
@@ -85,8 +80,6 @@ interface BattleState {
 }
 
 let currentBattle: BattleState | null = null;
-
-// --- Data -----------------------------------------------------------------
 
 const POKEMON_DB: ReadonlyArray<Omit<Pokemon, "stats" | "moves" | "status">> = [
   { id: 1, name: "Bulbasaur", types: ["grass", "poison"], baseStats: { hp: 45, attack: 49, defense: 49, speed: 45 } },
@@ -117,11 +110,6 @@ const MOVES_DB: Move[] = [
   { name: "Thunderbolt", type: "electric", power: 90, accuracy: 100, category: "special" },
 ];
 
-// --- Utility Functions ----------------------------------------------------
-
-/**
- * Calculate a Pokémon's stat at a given level.
- */
 function calcStat(
   base: number,
   level: number,
@@ -133,9 +121,6 @@ function calcStat(
   return Math.floor((2 * base * level) / 100 + 5);
 }
 
-/**
- * Build a BattlePokemon from a base species, level, and desired move count.
- */
 function createBattlePokemon(
   species: Omit<Pokemon, "stats" | "moves" | "status">,
   level: number,
@@ -147,11 +132,10 @@ function createBattlePokemon(
     attack: calcStat(species.baseStats.attack, level),
     defense: calcStat(species.baseStats.defense, level),
     speed:  calcStat(species.baseStats.speed, level),
-    currentHp: 0, // set below
+    currentHp: 0,
   };
   stats.currentHp = stats.hp;
 
-  // Randomly pick `moveCount` distinct moves
   const movesPool = [...MOVES_DB];
   const moves: Move[] = [];
   for (let i = 0; i < moveCount && movesPool.length > 0; i++) {
@@ -168,9 +152,6 @@ function createBattlePokemon(
   };
 }
 
-/**
- * Damage formula implementation.
- */
 function calculateDamage(
   attacker: BattlePokemon,
   defender: BattlePokemon,
@@ -180,7 +161,6 @@ function calculateDamage(
   const attackStat = attacker.stats.attack;
   const defenseStat = defender.stats.defense;
 
-  // Type effectiveness multiplier
   let effectiveness = 1;
   for (const defType of defender.types) {
     const chart = TYPE_EFFECTIVENESS[move.type];
@@ -189,10 +169,7 @@ function calculateDamage(
     }
   }
 
-  // STAB bonus
   const stab = attacker.types.includes(move.type) ? 1.5 : 1;
-
-  // Random factor between 0.85 and 1.0
   const randomFactor = (Math.random() * 0.15) + 0.85;
 
   const baseDamage =
@@ -201,14 +178,11 @@ function calculateDamage(
   return Math.floor(baseDamage * stab * effectiveness * randomFactor);
 }
 
-// --- MCP Server & Tool Handlers ------------------------------------------
-
 const server = new Server({
   name: "pokemon-server",
   version: "1.0.0",
 });
 
-// Available tools metadata
 const TOOLS: Tool[] = [
   {
     name: "get_random_pokemon",
@@ -282,12 +256,10 @@ const TOOLS: Tool[] = [
   },
 ];
 
-// List tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS,
 }));
 
-// Call tools
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -421,7 +393,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const damage = calculateDamage(attacker, defender, move);
       defender.stats.currentHp = Math.max(0, defender.stats.currentHp - damage);
 
-      // Effectiveness messaging
       let multi = 1;
       for (const t of defender.types) {
         multi *= TYPE_EFFECTIVENESS[move.type]?.[t] ?? 1;
@@ -511,13 +482,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// --- Simple HTTP Server for Status and Health Checks --------------------
-
 const PORT = process.env.PORT || 3000;
 
-// Create a simple HTTP server for health checks
 const httpServer = http.createServer((req, res) => {
-  // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
   
@@ -540,17 +507,21 @@ const httpServer = http.createServer((req, res) => {
   }
 });
 
-// Boot server
 async function main() {
-  // Start the HTTP server for health checks
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Pokemon MCP Server running on http://0.0.0.0:${PORT}`);
-    console.log(`📡 Health check: http://0.0.0.0:${PORT}/health`);
-    console.log(`📖 Server info: http://0.0.0.0:${PORT}/`);
-    console.log(`🎮 MCP Server ready for stdio connections!`);
+  httpServer.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} already in use, skipping HTTP server`);
+    } else {
+      console.error('HTTP server error:', err);
+    }
   });
 
-  // Start the MCP server with stdio transport
+  httpServer.listen(Number(PORT), '0.0.0.0', () => {
+    console.error(`🚀 Pokemon MCP Server running on http://0.0.0.0:${PORT}`);
+    console.error(`📡 Health check: http://0.0.0.0:${PORT}/health`);
+    console.error(`📖 Server info: http://0.0.0.0:${PORT}/`);
+  });
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
