@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+  CallToolRequest,
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool,
@@ -364,7 +365,7 @@ function createServer(): Server {
   }));
 
   // Handle tool invocations — dispatches by tool name to the appropriate handler
-  server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
@@ -668,7 +669,7 @@ async function main() {
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // Active HTTP sessions keyed by session ID (assigned on initialize)
-  const httpTransports: Record<string, StreamableHTTPServerTransport> = {};
+  const httpTransports = new Map<string, StreamableHTTPServerTransport>();
 
   app.use(cors());
   app.use(express.json());
@@ -691,15 +692,18 @@ async function main() {
   app.post("/mcp", async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-    if (sessionId && httpTransports[sessionId]) {
+    if (sessionId && httpTransports.has(sessionId)) {
       // Route to existing session
-      await httpTransports[sessionId].handleRequest(req, res, req.body);
+      await httpTransports.get(sessionId)!.handleRequest(req, res, req.body);
     } else if (!sessionId && isInitializeRequest(req.body)) {
       // First contact — create a new session with its own Server + Transport
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
-          httpTransports[id] = transport;
+          httpTransports.set(id, transport);
+        },
+        onsessionclosed: (id) => {
+          httpTransports.delete(id);
         },
       });
       const httpServer = createServer();
@@ -715,11 +719,11 @@ async function main() {
   // Both require a valid Mcp-Session-Id header.
   const handleSessionRequest = async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !httpTransports[sessionId]) {
+    if (!sessionId || !httpTransports.has(sessionId)) {
       res.status(400).json({ error: "Invalid or missing session ID" });
       return;
     }
-    await httpTransports[sessionId].handleRequest(req, res);
+    await httpTransports.get(sessionId)!.handleRequest(req, res);
   };
 
   app.get("/mcp", handleSessionRequest);
