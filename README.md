@@ -67,7 +67,8 @@ The server implements the MCP protocol with the following tools:
 
 ### Part 1: Basic Integration (30 minutes)
 
-1. Configure the MCP server in your chosen client (Claude Desktop or ChatGPT-compatible)
+1. Configure the MCP server in your chosen client (Claude Desktop or ChatGPT-compatible) for testing purposes. 
+Make sure that you create an actual server that stdio for interacting with the MCP server.
 2. Test basic functionality:
    - List all available Pokemon
    - Generate a random Pokemon
