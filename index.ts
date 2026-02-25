@@ -5,7 +5,7 @@ import {
   CallToolRequest,
   CallToolRequestSchema,
   ListToolsRequestSchema,
-  Tool,
+Tool,
   isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import express, { Request, Response } from "express";
@@ -351,7 +351,7 @@ const TOOLS: Tool[] = [
  * All instances share the same module-level `currentBattle` state, so a battle
  * started over stdio is visible to HTTP clients and vice versa.
  */
-function createServer(): Server {
+export function createServer(): Server {
   const server = new Server({
     name: "pokemon-server",
     version: "1.0.0",
@@ -746,7 +746,12 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error("Server error:", err);
-  process.exit(1);
-});
+// Only auto-start when run directly (not when imported by tests)
+const isDirectRun =
+  process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/.*\//, ""));
+if (isDirectRun) {
+  main().catch(err => {
+    console.error("Server error:", err);
+    process.exit(1);
+  });
+}

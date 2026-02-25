@@ -21,10 +21,31 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ matrix.node-version }}
-    - name: Install tsx globally
-      run: npm install -g tsx
-    - name: Build
+    - name: Install dependencies
       run: |
         npm install --silent
-        exec npx tsx index.ts
-        npx webpack
+        npm install -g tsx
+
+    - name: Run tests
+      run: npm test
+
+    - name: Start server and verify status
+      run: |
+        PORT=3000 npx tsx index.ts > server.log 2>&1 &
+        SERVER_PID=$!
+        echo "Server PID: $SERVER_PID"
+
+        # Wait for the health endpoint to respond (up to 15 seconds)
+        for i in $(seq 1 15); do
+          if curl -s http://localhost:3000/ | grep -q "Pokemon MCP Server is running"; then
+            echo "Server is healthy"
+            kill $SERVER_PID
+            exit 0
+          fi
+          sleep 1
+        done
+
+        echo "Server failed to start. Logs:"
+        cat server.log
+        kill $SERVER_PID 2>/dev/null
+        exit 1
