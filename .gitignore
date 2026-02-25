@@ -42,3 +42,4 @@ coverage/
 
 # Package files
 *.tgz
+test-battle.sh

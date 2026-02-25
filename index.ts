@@ -1,13 +1,16 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+  CallToolRequest,
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool,
+  isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import express, { Request, Response } from "express";
 import cors from "cors";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * Pokemon MCP Server
@@ -19,8 +22,15 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
  * Architecture:
  *   - POKEMON_DB / MOVES_DB: Static data for species and moves
  *   - TYPE_EFFECTIVENESS: Type chart (attacking → defending → multiplier)
- *   - BattleState: Singleton state for the active battle
+ *   - BattleState: Singleton state for the active battle (shared across transports)
+ *   - createServer(): Factory that produces a configured MCP Server instance
  *   - Tool handlers: MCP tool implementations (list, get, battle, attack, etc.)
+ *
+ * Transports (run simultaneously):
+ *   - Stdio: For local MCP clients (Claude Desktop). One Server instance.
+ *   - Streamable HTTP: For remote/web clients. One Server instance per session,
+ *     served via Express on PORT (default 3000). Uses the MCP Streamable HTTP
+ *     protocol (POST/GET/DELETE on /mcp) with session IDs in headers.
  *
  * Key mechanics:
  *   - Damage = ((2*Level+10)/250) * (Atk/Def) * Power + 2, × STAB × Type × Random
@@ -102,6 +112,7 @@ interface BattlePokemon extends Pokemon {
   status: null;
 }
 
+/** Tracks the state of an ongoing battle between two Pokemon. */
 interface BattleState {
   active: boolean;
   pokemon1: BattlePokemon;
@@ -110,6 +121,10 @@ interface BattleState {
   currentTurn: "pokemon1" | "pokemon2";
 }
 
+/**
+ * Singleton battle state, shared across all transports (stdio + HTTP sessions).
+ * Only one battle can be active at a time regardless of which client started it.
+ */
 let currentBattle: BattleState | null = null;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -246,12 +261,12 @@ function calculateDamage(
 // MCP Server & Tool Handlers
 // ═══════════════════════════════════════════════════════════════════════════
 
-const server = new Server({
-  name: "pokemon-server",
-  version: "1.0.0",
-});
-
-// Available tools metadata
+/**
+ * MCP tool definitions exposed to clients via tools/list.
+ * Each tool has a name, description, and JSON Schema for its input.
+ * The actual implementations live in the CallToolRequestSchema handler
+ * inside createServer().
+ */
 const TOOLS: Tool[] = [
   {
     name: "get_random_pokemon",
@@ -325,16 +340,36 @@ const TOOLS: Tool[] = [
   },
 ];
 
-// List tools
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOLS,
-}));
+/**
+ * Factory: creates a fully configured MCP Server with all tool handlers.
+ *
+ * Why a factory? A single MCP Server can only bind to one transport at a time.
+ * We need separate instances for:
+ *   - The stdio transport (one long-lived instance)
+ *   - Each HTTP session (one instance per connecting client)
+ *
+ * All instances share the same module-level `currentBattle` state, so a battle
+ * started over stdio is visible to HTTP clients and vice versa.
+ */
+function createServer(): Server {
+  const server = new Server({
+    name: "pokemon-server",
+    version: "1.0.0",
+  }, {
+    capabilities: { tools: {} },
+  });
 
-// Call tools
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // List tools
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: TOOLS,
+  }));
+
+  // Handle tool invocations — dispatches by tool name to the appropriate handler
+  server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
+    // Pick a random species, scale to given (or random) level, assign random moves
     case "get_random_pokemon": {
       const levelArg = typeof args?.level === "number" ? args.level : undefined;
       const species = POKEMON_DB[Math.floor(Math.random() * POKEMON_DB.length)];
@@ -355,6 +390,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
+    // Look up a specific species by name (case-insensitive), scale to level
     case "get_pokemon_by_name": {
       if (!args || typeof args.name !== "string") {
         throw new Error("`name` must be provided and be a string");
@@ -385,6 +421,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
+    // Return a summary of every species in POKEMON_DB
     case "list_all_pokemon": {
       const lines = POKEMON_DB.map(p =>
         `${p.name} [${p.types.join("/")}] — HP${p.baseStats.hp} ATK${p.baseStats.attack} DEF${p.baseStats.defense} SPD${p.baseStats.speed}`
@@ -394,6 +431,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
+    // Initialize a new battle between two named Pokemon (replaces any active battle)
     case "start_battle": {
       const { pokemon1_name, pokemon1_level, pokemon2_name, pokemon2_level } = args ?? {};
       if (typeof pokemon1_name !== "string" || typeof pokemon2_name !== "string") {
@@ -440,6 +478,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
+    // Execute one attack: validate turn order, check accuracy, calculate damage, update HP
     case "attack": {
       if (!currentBattle?.active) {
         throw new Error("No active battle. Use `start_battle` first.");
@@ -530,6 +569,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text }] };
     }
 
+    // Return current HP and turn info for the active battle
     case "get_battle_status": {
       if (!currentBattle) {
         return { content: [{ type: "text", text: "No active battle." }] };
@@ -544,6 +584,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
 
+    // Query the type chart: one matchup (atk vs def) or full chart for an attacking type
     case "get_type_effectiveness": {
       if (typeof args?.attacking_type !== "string") {
         throw new Error("`attacking_type` is required");
@@ -591,60 +632,118 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     default:
       throw new Error(`Tool "${name}" not recognized`);
   }
-});
+  });
 
-// Boot server
+  return server;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Server Bootstrap
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Start both transports simultaneously:
+ *
+ *  1. **Stdio** — for local MCP clients like Claude Desktop that launch this
+ *     process and communicate over stdin/stdout. Single long-lived Server.
+ *
+ *  2. **Streamable HTTP** — for remote/web MCP clients that connect over the
+ *     network. Each client session gets its own Server + Transport pair.
+ *     The MCP Streamable HTTP protocol uses a single `/mcp` endpoint with
+ *     three HTTP methods:
+ *       - POST: client → server JSON-RPC messages
+ *       - GET:  server → client SSE notification stream
+ *       - DELETE: session termination
+ *     Sessions are identified by the `Mcp-Session-Id` header.
+ */
 async function main() {
-  // Use stdio transport for MCP client compatibility (Claude Desktop)
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // ── Stdio Transport ────────────────────────────────────────────────────
+  // Used by Claude Desktop and other local MCP clients that spawn this process.
+  const stdioServer = createServer();
+  const stdioTransport = new StdioServerTransport();
+  await stdioServer.connect(stdioTransport);
 
-  // Optional: Uncomment below for HTTP/SSE transport instead
-  /*
-  const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  // ── Streamable HTTP Transport (optional) ─────────────────────────────
+  // Exposes the same MCP tools over HTTP for remote clients.
+  // Disabled when MCP_HTTP=0 or MCP_HTTP=false; enabled otherwise.
+  const httpEnabled = !["0", "false"].includes(
+    (process.env.MCP_HTTP ?? "").toLowerCase(),
+  );
 
-  // Store active transports keyed by session
-  const transports: Map<string, SSEServerTransport> = new Map();
+  if (httpEnabled) {
+    const app = express();
+    const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-  app.use(cors());
-  app.use(express.json());
+    // Active HTTP sessions keyed by session ID (assigned on initialize)
+    const httpTransports = new Map<string, StreamableHTTPServerTransport>();
 
-  app.get('/', (req: Request, res: Response) => {
-    res.json({
-      status: 'Pokemon MCP Server is running!',
-      version: '1.0.0',
-      endpoints: {
-        health: 'GET /',
-        mcp: 'GET,POST /mcp'
+    app.use(cors());
+    app.use(express.json());
+
+    // Health-check / discovery endpoint
+    app.get("/", (_req: Request, res: Response) => {
+      res.json({
+        status: "Pokemon MCP Server is running!",
+        version: "1.0.0",
+        endpoints: {
+          health: "GET /",
+          mcp: "POST,GET,DELETE /mcp",
+        },
+      });
+    });
+
+    // POST /mcp — handles all client-to-server JSON-RPC messages.
+    // On the first request (an "initialize" message with no session ID), a new
+    // session is created. Subsequent requests must include the Mcp-Session-Id header.
+    app.post("/mcp", async (req: Request, res: Response) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      if (sessionId && httpTransports.has(sessionId)) {
+        // Route to existing session
+        await httpTransports.get(sessionId)!.handleRequest(req, res, req.body);
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        // First contact — create a new session with its own Server + Transport
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            httpTransports.set(id, transport);
+          },
+          onsessionclosed: (id) => {
+            httpTransports.delete(id);
+          },
+        });
+        const httpServer = createServer();
+        await httpServer.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } else {
+        res.status(400).json({ error: "Invalid or missing session ID" });
       }
     });
-  });
 
-  // GET /mcp - opens the SSE stream
-  app.get("/mcp", async (req: Request, res: Response) => {
-    const transport = new SSEServerTransport("/mcp", res);
-    transports.set(transport.sessionId, transport);
-    await server.connect(transport);
-  });
+    // GET /mcp — opens an SSE stream for server-initiated notifications.
+    // DELETE /mcp — tears down the session and cleans up resources.
+    // Both require a valid Mcp-Session-Id header.
+    const handleSessionRequest = async (req: Request, res: Response) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      if (!sessionId || !httpTransports.has(sessionId)) {
+        res.status(400).json({ error: "Invalid or missing session ID" });
+        return;
+      }
+      await httpTransports.get(sessionId)!.handleRequest(req, res);
+    };
 
-  // POST /mcp - receives messages from the client
-  app.post("/mcp", async (req: Request, res: Response) => {
-    const sessionId = req.query.sessionId as string;
-    const transport = transports.get(sessionId);
-    if (transport) {
-      await transport.handlePostMessage(req, res);
-    } else {
-      res.status(400).send("Unknown session");
-    }
-  });
+    app.get("/mcp", handleSessionRequest);
+    app.delete("/mcp", handleSessionRequest);
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.error(`🚀 Pokemon MCP Server running on http://0.0.0.0:${PORT}`);
-    console.error(`🔗 MCP endpoint: http://0.0.0.0:${PORT}/mcp`);
-    console.error(`📡 Ready for client connections!`);
-  });
-  */
+    const httpListener = app.listen(PORT, "0.0.0.0", () => {
+      console.error(`Pokemon MCP Server HTTP endpoint: http://0.0.0.0:${PORT}/mcp`);
+    });
+    httpListener.on("error", (err: NodeJS.ErrnoException) => {
+      console.error(
+        `HTTP transport failed to start (${err.code ?? err.message}), continuing with stdio only.`,
+      );
+    });
+  }
 }
 
 main().catch(err => {
