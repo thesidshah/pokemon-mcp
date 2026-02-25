@@ -663,75 +663,87 @@ async function main() {
   const stdioTransport = new StdioServerTransport();
   await stdioServer.connect(stdioTransport);
 
-  // ── Streamable HTTP Transport ──────────────────────────────────────────
+  // ── Streamable HTTP Transport (optional) ─────────────────────────────
   // Exposes the same MCP tools over HTTP for remote clients.
-  const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  // Disabled when MCP_HTTP=0 or MCP_HTTP=false; enabled otherwise.
+  const httpEnabled = !["0", "false"].includes(
+    (process.env.MCP_HTTP ?? "").toLowerCase(),
+  );
 
-  // Active HTTP sessions keyed by session ID (assigned on initialize)
-  const httpTransports = new Map<string, StreamableHTTPServerTransport>();
+  if (httpEnabled) {
+    const app = express();
+    const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-  app.use(cors());
-  app.use(express.json());
+    // Active HTTP sessions keyed by session ID (assigned on initialize)
+    const httpTransports = new Map<string, StreamableHTTPServerTransport>();
 
-  // Health-check / discovery endpoint
-  app.get("/", (_req: Request, res: Response) => {
-    res.json({
-      status: "Pokemon MCP Server is running!",
-      version: "1.0.0",
-      endpoints: {
-        health: "GET /",
-        mcp: "POST,GET,DELETE /mcp",
-      },
-    });
-  });
+    app.use(cors());
+    app.use(express.json());
 
-  // POST /mcp — handles all client-to-server JSON-RPC messages.
-  // On the first request (an "initialize" message with no session ID), a new
-  // session is created. Subsequent requests must include the Mcp-Session-Id header.
-  app.post("/mcp", async (req: Request, res: Response) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (sessionId && httpTransports.has(sessionId)) {
-      // Route to existing session
-      await httpTransports.get(sessionId)!.handleRequest(req, res, req.body);
-    } else if (!sessionId && isInitializeRequest(req.body)) {
-      // First contact — create a new session with its own Server + Transport
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (id) => {
-          httpTransports.set(id, transport);
-        },
-        onsessionclosed: (id) => {
-          httpTransports.delete(id);
+    // Health-check / discovery endpoint
+    app.get("/", (_req: Request, res: Response) => {
+      res.json({
+        status: "Pokemon MCP Server is running!",
+        version: "1.0.0",
+        endpoints: {
+          health: "GET /",
+          mcp: "POST,GET,DELETE /mcp",
         },
       });
-      const httpServer = createServer();
-      await httpServer.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    } else {
-      res.status(400).json({ error: "Invalid or missing session ID" });
-    }
-  });
+    });
 
-  // GET /mcp — opens an SSE stream for server-initiated notifications.
-  // DELETE /mcp — tears down the session and cleans up resources.
-  // Both require a valid Mcp-Session-Id header.
-  const handleSessionRequest = async (req: Request, res: Response) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !httpTransports.has(sessionId)) {
-      res.status(400).json({ error: "Invalid or missing session ID" });
-      return;
-    }
-    await httpTransports.get(sessionId)!.handleRequest(req, res);
-  };
+    // POST /mcp — handles all client-to-server JSON-RPC messages.
+    // On the first request (an "initialize" message with no session ID), a new
+    // session is created. Subsequent requests must include the Mcp-Session-Id header.
+    app.post("/mcp", async (req: Request, res: Response) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-  app.get("/mcp", handleSessionRequest);
-  app.delete("/mcp", handleSessionRequest);
+      if (sessionId && httpTransports.has(sessionId)) {
+        // Route to existing session
+        await httpTransports.get(sessionId)!.handleRequest(req, res, req.body);
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        // First contact — create a new session with its own Server + Transport
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            httpTransports.set(id, transport);
+          },
+          onsessionclosed: (id) => {
+            httpTransports.delete(id);
+          },
+        });
+        const httpServer = createServer();
+        await httpServer.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } else {
+        res.status(400).json({ error: "Invalid or missing session ID" });
+      }
+    });
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.error(`Pokemon MCP Server HTTP endpoint: http://0.0.0.0:${PORT}/mcp`);
-  });
+    // GET /mcp — opens an SSE stream for server-initiated notifications.
+    // DELETE /mcp — tears down the session and cleans up resources.
+    // Both require a valid Mcp-Session-Id header.
+    const handleSessionRequest = async (req: Request, res: Response) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      if (!sessionId || !httpTransports.has(sessionId)) {
+        res.status(400).json({ error: "Invalid or missing session ID" });
+        return;
+      }
+      await httpTransports.get(sessionId)!.handleRequest(req, res);
+    };
+
+    app.get("/mcp", handleSessionRequest);
+    app.delete("/mcp", handleSessionRequest);
+
+    const httpListener = app.listen(PORT, "0.0.0.0", () => {
+      console.error(`Pokemon MCP Server HTTP endpoint: http://0.0.0.0:${PORT}/mcp`);
+    });
+    httpListener.on("error", (err: NodeJS.ErrnoException) => {
+      console.error(
+        `HTTP transport failed to start (${err.code ?? err.message}), continuing with stdio only.`,
+      );
+    });
+  }
 }
 
 main().catch(err => {
